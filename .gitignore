@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+virtualenv/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Certificates and keys
+certs/
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+paraglider_simulation_results.json
+
+# Run scripts created by setup
+run_emulator.sh
+run_emulator.bat
+
+# Lock files
+/tmp/paraglider_emulator.lock
+
+# Test outputs
+test_results/
+coverage/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
