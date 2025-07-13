@@ -1,497 +1,396 @@
-/*
- * ESP32 GPS Tracker for Paraglider Platform
+/**
+ * ESP32 GPS Tracker for HFSS-DIGI Platform
  * 
- * This example demonstrates how to build a GPS tracking device
- * that integrates with the platform using MQTT over TLS.
+ * This example demonstrates how to integrate an ESP32-based GPS tracker
+ * with the HFSS-DIGI tracking platform using secure MQTT over TLS.
  * 
  * Required Libraries:
  * - WiFi (built-in)
- * - WiFiClientSecure (built-in)  
  * - PubSubClient by Nick O'Leary
  * - ArduinoJson by Benoit Blanchon
  * - TinyGPSPlus by Mikal Hart
- * - Preferences (built-in)
- * 
- * Hardware:
- * - ESP32 DevKit
- * - GPS Module (Neo-6M/7M/8M)
- * - Battery with voltage divider on ADC pin
- * 
- * Connections:
- * - GPS TX -> ESP32 RX2 (GPIO 16)
- * - GPS RX -> ESP32 TX2 (GPIO 17)
- * - Battery voltage divider -> GPIO 34 (ADC)
  */
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <TinyGPSPlus.h>
 #include <Preferences.h>
-#include "mbedtls/md.h"
+#include <TinyGPSPlus.h>
+#include <HTTPClient.h>
+#include <mbedtls/md.h>
 #include <time.h>
 
-// ===== CONFIGURATION =====
-// Update these values for your deployment
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+// Configuration
+#define WIFI_SSID "your-wifi-ssid"
+#define WIFI_PASSWORD "your-wifi-password"
+#define API_DOMAIN "your-domain.com"
+#define API_BASE_URL "https://your-domain.com"
+#define MQTT_PORT 8883
 
-const char* MANUFACTURER = "DIGIFLY";
-const char* MANUFACTURER_SECRET = "YOUR_MANUFACTURER_SECRET_HERE";
+// Factory provisioned values (DO NOT HARDCODE IN PRODUCTION)
+#define MANUFACTURER_ID "DIGIFLY"
+#define DEVICE_ID "PARA-20250711-TEST-0001"
+#define DEVICE_SECRET "your-device-secret-from-factory"
+#define REGISTRATION_TOKEN "your-registration-token"
 
-const char* API_BASE_URL = "http://your-server.com";
-const char* MQTT_HOST = "your-server.com";
-const int MQTT_PORT = 8883;
-const char* MQTT_USER = "mqtt_user";
-const char* MQTT_PASSWORD = "mqtt_secure_password";
-
-const char* FIRMWARE_VERSION = "1.0.0";
-
-// GPS Configuration
+// GPS Serial (adjust pins for your board)
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
 #define GPS_BAUD 9600
-#define GPS_RX 16
-#define GPS_TX 17
 
-// Battery monitoring
-#define BATTERY_PIN 34
-#define BATTERY_MAX_VOLTAGE 4.2
-#define BATTERY_MIN_VOLTAGE 3.0
-
-// Update intervals (seconds)
-#define UPDATE_INTERVAL_MOVING 5
-#define UPDATE_INTERVAL_STATIONARY 30
-#define UPDATE_INTERVAL_LOW_BATTERY 60
-
-// ===== CERTIFICATES =====
-// For production, store these in encrypted NVS or external secure element
-const char* CA_CERT = R"EOF(
------BEGIN CERTIFICATE-----
-# Paste your CA certificate here
------END CERTIFICATE-----
-)EOF";
-
-const char* CLIENT_CERT = R"EOF(
------BEGIN CERTIFICATE-----
-# Paste your client certificate here
------END CERTIFICATE-----
-)EOF";
-
-const char* CLIENT_KEY = R"EOF(
------BEGIN RSA PRIVATE KEY-----
-# Paste your client key here
------END RSA PRIVATE KEY-----
-)EOF";
-
-// ===== GLOBAL OBJECTS =====
+// Global objects
 WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
-TinyGPSPlus gps;
-HardwareSerial GPS_Serial(2);
 Preferences preferences;
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(1);
 
-// Device configuration
-struct {
-    char deviceId[64];
-    char apiKey[128];
-    char deviceSecret[64];
-    bool registered;
-} deviceConfig;
+// State variables
+bool deviceRegistered = false;
+unsigned long lastGPSUpdate = 0;
+unsigned long lastMQTTReconnect = 0;
+int mqttReconnectDelay = 1000;
 
-// State tracking
-unsigned long lastUpdate = 0;
-unsigned long lastGPSCheck = 0;
-int updateInterval = UPDATE_INTERVAL_STATIONARY;
-float lastLat = 0;
-float lastLng = 0;
-bool isMoving = false;
-
-// ===== HELPER FUNCTIONS =====
-
-String getChipId() {
-    uint64_t chipid = ESP.getEfuseMac();
-    char chipIdStr[13];
-    sprintf(chipIdStr, "%04X%08X", (uint16_t)(chipid>>32), (uint32_t)chipid);
-    return String(chipIdStr);
-}
-
-String getTimestamp() {
-    time_t now;
-    time(&now);
-    char buf[21];
-    strftime(buf, sizeof(buf), "%Y%m%d%H%M%S", gmtime(&now));
-    return String(buf);
-}
-
-String getISOTimestamp() {
-    time_t now;
-    time(&now);
-    char buf[21];
-    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
-    return String(buf);
-}
-
-float getBatteryLevel() {
-    int adcValue = analogRead(BATTERY_PIN);
-    float voltage = (adcValue / 4095.0) * 3.3 * 2; // Assuming 2:1 voltage divider
-    float percentage = ((voltage - BATTERY_MIN_VOLTAGE) / (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE)) * 100;
-    return constrain(percentage, 0, 100);
-}
-
-String generateHMAC(const String& payload, const String& secret) {
-    unsigned char hmac[32];
-    
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-    
-    mbedtls_md_hmac_starts(&ctx, (unsigned char*)secret.c_str(), secret.length());
-    mbedtls_md_hmac_update(&ctx, (unsigned char*)payload.c_str(), payload.length());
-    mbedtls_md_hmac_finish(&ctx, hmac);
-    
-    // Convert to hex string
-    String signature = "";
-    for(int i = 0; i < 32; i++) {
-        char str[3];
-        sprintf(str, "%02x", (int)hmac[i]);
-        signature += str;
-    }
-    
-    mbedtls_md_free(&ctx);
-    return signature;
-}
-
-// ===== DEVICE REGISTRATION =====
-
-bool registerDevice() {
-    HTTPClient http;
-    
-    String url = String(API_BASE_URL) + "/api/v1/devices/register";
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-    
-    // Generate device ID
-    String deviceId = String("PARA-") + getTimestamp() + "-" + getChipId();
-    String deviceSecret = "secret_" + deviceId + "_0";
-    
-    // Create registration token
-    String message = String(MANUFACTURER) + ":" + deviceId + ":" + deviceSecret;
-    String registrationToken = generateHMAC(message, String(MANUFACTURER_SECRET));
-    
-    // Build registration payload
-    StaticJsonDocument<768> doc;
-    doc["device_id"] = deviceId;
-    doc["manufacturer"] = MANUFACTURER;
-    doc["registration_token"] = registrationToken;
-    doc["device_secret"] = deviceSecret;
-    doc["name"] = "ESP32 Tracker " + getChipId();
-    doc["device_type"] = "PARAGLIDER_TRACKER";
-    doc["firmware_version"] = FIRMWARE_VERSION;
-    
-    JsonObject deviceInfo = doc.createNestedObject("device_info");
-    deviceInfo["chip_id"] = getChipId();
-    deviceInfo["model"] = "ESP32-GPS-v1";
-    deviceInfo["wifi_mac"] = WiFi.macAddress();
-    
-    String payload;
-    serializeJson(doc, payload);
-    
-    Serial.println("Registering device...");
-    Serial.println("Payload: " + payload);
-    
-    int httpCode = http.POST(payload);
-    
-    if (httpCode == 200) {
-        String response = http.getString();
-        Serial.println("Registration successful!");
-        Serial.println("Response: " + response);
-        
-        StaticJsonDocument<512> responseDoc;
-        DeserializationError error = deserializeJson(responseDoc, response);
-        
-        if (!error) {
-            // Save credentials
-            strcpy(deviceConfig.deviceId, responseDoc["device_id"]);
-            strcpy(deviceConfig.apiKey, responseDoc["api_key"]);
-            strcpy(deviceConfig.deviceSecret, deviceSecret.c_str());
-            deviceConfig.registered = true;
-            
-            // Persist to NVS
-            preferences.putString("device_id", deviceConfig.deviceId);
-            preferences.putString("api_key", deviceConfig.apiKey);
-            preferences.putString("device_secret", deviceConfig.deviceSecret);
-            preferences.putBool("registered", true);
-            
-            http.end();
-            return true;
-        }
-    } else {
-        Serial.printf("Registration failed. HTTP code: %d\n", httpCode);
-        Serial.println("Response: " + http.getString());
-    }
-    
-    http.end();
-    return false;
-}
-
-// ===== MQTT FUNCTIONS =====
-
-void setupMQTT() {
-    wifiClient.setCACert(CA_CERT);
-    wifiClient.setCertificate(CLIENT_CERT);
-    wifiClient.setPrivateKey(CLIENT_KEY);
-    
-    mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-    mqttClient.setBufferSize(1024);
-}
-
-bool connectMQTT() {
-    if (mqttClient.connected()) {
-        return true;
-    }
-    
-    String clientId = String(deviceConfig.deviceId) + "-" + String(millis());
-    
-    Serial.print("Connecting to MQTT broker...");
-    
-    if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
-        Serial.println(" connected!");
-        return true;
-    } else {
-        Serial.print(" failed, rc=");
-        Serial.println(mqttClient.state());
-        return false;
-    }
-}
-
-void publishGPSData() {
-    if (!gps.location.isValid()) {
-        Serial.println("No valid GPS data");
-        return;
-    }
-    
-    // Check if device is moving
-    float distance = TinyGPSPlus::distanceBetween(
-        lastLat, lastLng,
-        gps.location.lat(), gps.location.lng()
-    );
-    
-    isMoving = (distance > 5); // Moving if more than 5 meters
-    
-    // Update last position
-    lastLat = gps.location.lat();
-    lastLng = gps.location.lng();
-    
-    // Build GPS data message
-    StaticJsonDocument<768> doc;
-    JsonObject data = doc.createNestedObject("data");
-    
-    data["device_id"] = deviceConfig.deviceId;
-    data["latitude"] = serialized(String(gps.location.lat(), 6));
-    data["longitude"] = serialized(String(gps.location.lng(), 6));
-    data["altitude"] = gps.altitude.meters();
-    data["speed"] = gps.speed.kmph();
-    data["heading"] = gps.course.deg();
-    data["accuracy"] = gps.hdop.hdop() * 2.5;
-    data["satellites"] = gps.satellites.value();
-    data["battery_level"] = getBatteryLevel();
-    data["timestamp"] = getISOTimestamp();
-    
-    // Add metadata
-    JsonObject metadata = data.createNestedObject("device_metadata");
-    metadata["firmware"] = FIRMWARE_VERSION;
-    metadata["uptime"] = millis() / 1000;
-    metadata["free_heap"] = ESP.getFreeHeap();
-    metadata["moving"] = isMoving;
-    metadata["rssi"] = WiFi.RSSI();
-    
-    // Create canonical JSON for signature
-    String dataStr;
-    serializeJson(data, dataStr);
-    
-    // Generate HMAC signature
-    String signature = generateHMAC(dataStr, String(deviceConfig.deviceSecret));
-    
-    // Add signature and API key
-    doc["signature"] = signature;
-    doc["api_key"] = deviceConfig.apiKey;
-    
-    // Publish to MQTT
-    String topic = "gps/" + String(deviceConfig.deviceId) + "/data";
-    String payload;
-    serializeJson(doc, payload);
-    
-    if (mqttClient.publish(topic.c_str(), payload.c_str(), false)) {
-        Serial.println("GPS data published successfully");
-        Serial.printf("Position: %.6f, %.6f, Alt: %.1fm, Sats: %d\n",
-            gps.location.lat(), gps.location.lng(),
-            gps.altitude.meters(), gps.satellites.value());
-    } else {
-        Serial.println("Failed to publish GPS data");
-    }
-}
-
-// ===== SETUP =====
+// Function declarations
+void setupWiFi();
+bool registerDevice();
+bool downloadCACert();
+void setupMQTT();
+bool connectMQTT();
+void sendGPSData();
+String generateHMAC(const String& data);
+String getISO8601Time();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+float getBatteryLevel();
+bool isDeviceMoving();
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("\n\nESP32 GPS Tracker Starting...");
+    Serial.println("ESP32 GPS Tracker Starting...");
     
     // Initialize GPS
-    GPS_Serial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
+    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
     Serial.println("GPS initialized");
     
-    // Initialize preferences
+    // Initialize secure storage
     preferences.begin("gps-tracker", false);
     
-    // Load saved configuration
-    deviceConfig.registered = preferences.getBool("registered", false);
-    if (deviceConfig.registered) {
-        preferences.getString("device_id", deviceConfig.deviceId, sizeof(deviceConfig.deviceId));
-        preferences.getString("api_key", deviceConfig.apiKey, sizeof(deviceConfig.apiKey));
-        preferences.getString("device_secret", deviceConfig.deviceSecret, sizeof(deviceConfig.deviceSecret));
-        Serial.println("Loaded saved device configuration");
-        Serial.printf("Device ID: %s\n", deviceConfig.deviceId);
+    // Connect to WiFi
+    setupWiFi();
+    
+    // Check if device is already registered
+    deviceRegistered = preferences.getBool("registered", false);
+    
+    if (!deviceRegistered) {
+        Serial.println("Device not registered. Starting registration...");
+        if (registerDevice()) {
+            deviceRegistered = true;
+            preferences.putBool("registered", true);
+        } else {
+            Serial.println("Registration failed! Restarting in 30 seconds...");
+            delay(30000);
+            ESP.restart();
+        }
     }
     
-    // Connect to WiFi
-    Serial.printf("Connecting to WiFi: %s", WIFI_SSID);
+    // Download CA certificate if not present
+    if (!preferences.isKey("ca_cert")) {
+        downloadCACert();
+    }
+    
+    // Setup MQTT
+    setupMQTT();
+    
+    // Sync time for accurate timestamps
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+}
+
+void loop() {
+    // Feed GPS data
+    while (gpsSerial.available() > 0) {
+        gps.encode(gpsSerial.read());
+    }
+    
+    // Maintain MQTT connection
+    if (!mqttClient.connected()) {
+        unsigned long now = millis();
+        if (now - lastMQTTReconnect > mqttReconnectDelay) {
+            if (connectMQTT()) {
+                mqttReconnectDelay = 1000; // Reset delay on success
+            } else {
+                mqttReconnectDelay = min(mqttReconnectDelay * 2, 60000); // Max 1 minute
+            }
+            lastMQTTReconnect = now;
+        }
+    } else {
+        mqttClient.loop();
+    }
+    
+    // Send GPS updates
+    unsigned long updateInterval = isDeviceMoving() ? 1000 : 30000; // 1s moving, 30s stationary
+    
+    if (millis() - lastGPSUpdate > updateInterval) {
+        if (gps.location.isValid() && mqttClient.connected()) {
+            sendGPSData();
+            lastGPSUpdate = millis();
+        }
+    }
+}
+
+void setupWiFi() {
+    Serial.print("Connecting to WiFi");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
     }
-    Serial.println("\nWiFi connected!");
-    Serial.printf("IP address: %s\n", WiFi.localIP().toString().c_str());
     
-    // Sync time
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    Serial.print("Syncing time");
-    time_t now = time(nullptr);
-    while (now < 24 * 3600) {
-        Serial.print(".");
-        delay(500);
-        now = time(nullptr);
-    }
-    Serial.println(" done!");
-    
-    // Register device if needed
-    if (!deviceConfig.registered) {
-        if (!registerDevice()) {
-            Serial.println("Failed to register device. Restarting in 30 seconds...");
-            delay(30000);
-            ESP.restart();
-        }
-    }
-    
-    // Setup MQTT
-    setupMQTT();
-    
-    // Battery monitoring
-    analogReadResolution(12);
-    pinMode(BATTERY_PIN, INPUT);
-    
-    Serial.println("Setup complete! Starting GPS tracking...");
+    Serial.println("\nWiFi connected");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
 }
 
-// ===== MAIN LOOP =====
+bool registerDevice() {
+    HTTPClient http;
+    http.begin(String(API_BASE_URL) + "/api/v1/devices/register");
+    http.addHeader("Content-Type", "application/json");
+    
+    // Create registration payload
+    StaticJsonDocument<512> doc;
+    doc["device_id"] = DEVICE_ID;
+    doc["manufacturer"] = MANUFACTURER_ID;
+    doc["registration_token"] = REGISTRATION_TOKEN;
+    doc["device_secret"] = DEVICE_SECRET;
+    doc["device_type"] = "PARAGLIDER_TRACKER";
+    doc["firmware_version"] = "1.0.0";
+    
+    JsonObject device_info = doc.createNestedObject("device_info");
+    device_info["model"] = "ESP32-GPS-v1";
+    device_info["chip_id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+    
+    String payload;
+    serializeJson(doc, payload);
+    
+    Serial.println("Sending registration request...");
+    int httpCode = http.POST(payload);
+    
+    if (httpCode == 200) {
+        String response = http.getString();
+        StaticJsonDocument<512> responseDoc;
+        DeserializationError error = deserializeJson(responseDoc, response);
+        
+        if (!error) {
+            // Store credentials
+            preferences.putString("api_key", responseDoc["api_key"]);
+            preferences.putString("mqtt_user", responseDoc["mqtt_username"]);
+            preferences.putString("mqtt_pass", responseDoc["mqtt_password"]);
+            preferences.putString("device_secret", DEVICE_SECRET);
+            
+            Serial.println("Registration successful!");
+            Serial.print("MQTT Username: ");
+            Serial.println(responseDoc["mqtt_username"].as<String>());
+            
+            http.end();
+            return true;
+        }
+    }
+    
+    Serial.print("Registration failed. HTTP code: ");
+    Serial.println(httpCode);
+    http.end();
+    return false;
+}
 
-void loop() {
-    // Feed GPS data
-    while (GPS_Serial.available() > 0) {
-        gps.encode(GPS_Serial.read());
+bool downloadCACert() {
+    HTTPClient http;
+    http.begin(String(API_BASE_URL) + "/ca.crt");
+    
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+        String cert = http.getString();
+        preferences.putString("ca_cert", cert);
+        Serial.println("CA certificate downloaded and stored");
+        http.end();
+        return true;
     }
     
-    // Check GPS status every second
-    if (millis() - lastGPSCheck > 1000) {
-        lastGPSCheck = millis();
+    Serial.print("Failed to download CA cert. HTTP code: ");
+    Serial.println(httpCode);
+    http.end();
+    return false;
+}
+
+void setupMQTT() {
+    // Load and set CA certificate
+    String caCert = preferences.getString("ca_cert");
+    wifiClient.setCACert(caCert.c_str());
+    
+    // Configure MQTT
+    mqttClient.setServer(API_DOMAIN, MQTT_PORT);
+    mqttClient.setCallback(mqttCallback);
+    mqttClient.setBufferSize(1024); // Increase buffer for GPS messages
+    
+    // Initial connection
+    connectMQTT();
+}
+
+bool connectMQTT() {
+    String clientId = "esp32-" + String(DEVICE_ID);
+    String username = preferences.getString("mqtt_user");
+    String password = preferences.getString("mqtt_pass");
+    
+    Serial.print("Connecting to MQTT broker...");
+    
+    if (mqttClient.connect(clientId.c_str(), username.c_str(), password.c_str())) {
+        Serial.println(" connected!");
         
-        if (gps.location.isValid()) {
-            digitalWrite(LED_BUILTIN, HIGH);
-        } else {
-            digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN)); // Blink when no fix
-        }
+        // Subscribe to command topic
+        String cmdTopic = "devices/" + String(DEVICE_ID) + "/command";
+        mqttClient.subscribe(cmdTopic.c_str());
+        Serial.print("Subscribed to: ");
+        Serial.println(cmdTopic);
         
-        // Print GPS stats
-        if (gps.charsProcessed() < 10) {
-            Serial.println("WARNING: No GPS data received. Check wiring!");
-        }
+        return true;
     }
     
-    // Update interval based on movement and battery
-    float battery = getBatteryLevel();
-    if (battery < 20) {
-        updateInterval = UPDATE_INTERVAL_LOW_BATTERY;
-    } else if (isMoving) {
-        updateInterval = UPDATE_INTERVAL_MOVING;
+    Serial.print(" failed, rc=");
+    Serial.println(mqttClient.state());
+    return false;
+}
+
+void sendGPSData() {
+    // Create GPS data object
+    StaticJsonDocument<512> gpsDoc;
+    gpsDoc["device_id"] = DEVICE_ID;
+    gpsDoc["timestamp"] = getISO8601Time();
+    gpsDoc["latitude"] = gps.location.lat();
+    gpsDoc["longitude"] = gps.location.lng();
+    gpsDoc["altitude"] = gps.altitude.meters();
+    gpsDoc["speed"] = gps.speed.kmph();
+    gpsDoc["heading"] = gps.course.deg();
+    gpsDoc["accuracy"] = gps.hdop.hdop();
+    gpsDoc["satellites"] = gps.satellites.value();
+    gpsDoc["battery_level"] = getBatteryLevel();
+    
+    // Add metadata
+    JsonObject metadata = gpsDoc.createNestedObject("device_metadata");
+    metadata["fix_type"] = gps.location.isValid() ? "3D" : "No Fix";
+    metadata["hdop"] = gps.hdop.hdop();
+    
+    // Serialize for signing (sorted keys)
+    String canonicalJson;
+    serializeJsonSorted(gpsDoc, canonicalJson);
+    
+    // Generate signature
+    String signature = generateHMAC(canonicalJson);
+    
+    // Create final message
+    StaticJsonDocument<768> message;
+    message["data"] = gpsDoc;
+    message["signature"] = signature;
+    message["api_key"] = preferences.getString("api_key");
+    
+    // Publish
+    String payload;
+    serializeJson(message, payload);
+    
+    String topic = "gps/" + String(DEVICE_ID) + "/data";
+    
+    if (mqttClient.publish(topic.c_str(), payload.c_str())) {
+        Serial.print("GPS data sent: ");
+        Serial.print(gps.location.lat(), 6);
+        Serial.print(", ");
+        Serial.println(gps.location.lng(), 6);
     } else {
-        updateInterval = UPDATE_INTERVAL_STATIONARY;
+        Serial.println("Failed to send GPS data");
     }
-    
-    // Publish GPS data at configured interval
-    if (millis() - lastUpdate > updateInterval * 1000) {
-        lastUpdate = millis();
-        
-        // Ensure WiFi is connected
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("WiFi disconnected. Reconnecting...");
-            WiFi.reconnect();
-            delay(5000);
-            return;
-        }
-        
-        // Ensure MQTT is connected
-        if (!connectMQTT()) {
-            Serial.println("MQTT connection failed. Will retry next cycle.");
-            return;
-        }
-        
-        // Publish GPS data
-        publishGPSData();
-    }
-    
-    // Maintain MQTT connection
-    mqttClient.loop();
-    
-    // Yield to watchdog
-    yield();
 }
 
-// ===== ERROR HANDLING =====
+String generateHMAC(const String& data) {
+    String secret = preferences.getString("device_secret");
+    
+    unsigned char hmacResult[32];
+    mbedtls_md_context_t ctx;
+    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
+    
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1);
+    mbedtls_md_hmac_starts(&ctx, (unsigned char*)secret.c_str(), secret.length());
+    mbedtls_md_hmac_update(&ctx, (unsigned char*)data.c_str(), data.length());
+    mbedtls_md_hmac_finish(&ctx, hmacResult);
+    mbedtls_md_free(&ctx);
+    
+    // Convert to hex
+    String hmacHex = "";
+    for (int i = 0; i < 32; i++) {
+        char str[3];
+        sprintf(str, "%02x", (int)hmacResult[i]);
+        hmacHex += str;
+    }
+    
+    return hmacHex;
+}
 
-void handleError(int errorCode) {
-    Serial.printf("Error %d occurred\n", errorCode);
-    
-    // Log to NVS
-    preferences.putInt("last_error", errorCode);
-    preferences.putULong("error_time", millis());
-    
-    // Visual indication (if LED available)
-    for (int i = 0; i < errorCode; i++) {
-        digitalWrite(LED_BUILTIN, HIGH);
-        delay(200);
-        digitalWrite(LED_BUILTIN, LOW);
-        delay(200);
+String getISO8601Time() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        return "2025-01-01T00:00:00.000Z"; // Fallback
     }
     
-    // Recovery action based on error
-    switch(errorCode) {
-        case 1: // No GPS
-            // Just wait, GPS might need time
-            break;
-        case 2: // No Network
-            WiFi.reconnect();
-            break;
-        case 3: // MQTT Failed
-            mqttClient.disconnect();
-            delay(1000);
-            connectMQTT();
-            break;
-        case 4: // Auth Failed
-            // Try re-registration
-            deviceConfig.registered = false;
-            preferences.putBool("registered", false);
-            break;
+    char buffer[30];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S.000Z", &timeinfo);
+    return String(buffer);
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    Serial.print("Message received [");
+    Serial.print(topic);
+    Serial.print("]: ");
+    
+    // Parse JSON command
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, payload, length);
+    
+    if (!error) {
+        String command = doc["command"];
+        Serial.println(command);
+        
+        // Handle commands
+        if (command == "restart") {
+            ESP.restart();
+        } else if (command == "status") {
+            // Send status update
+            // Implementation depends on requirements
+        }
     }
+}
+
+float getBatteryLevel() {
+    // Example: Read battery voltage from ADC
+    // Adjust for your hardware setup
+    
+    // For testing, return a simulated value
+    static float battery = 100.0;
+    battery -= 0.01; // Slow drain
+    if (battery < 20) battery = 100; // Reset
+    return battery;
+}
+
+bool isDeviceMoving() {
+    static double lastLat = 0;
+    static double lastLon = 0;
+    
+    if (!gps.location.isValid()) return false;
+    
+    double distance = TinyGPSPlus::distanceBetween(
+        lastLat, lastLon,
+        gps.location.lat(), gps.location.lng()
+    );
+    
+    lastLat = gps.location.lat();
+    lastLon = gps.location.lng();
+    
+    return distance > 5.0; // Moving if more than 5 meters
 }
