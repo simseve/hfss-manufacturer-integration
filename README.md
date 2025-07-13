@@ -4,6 +4,10 @@ Welcome! This guide helps you integrate your GPS devices with the HFSS DIGI plat
 
 ## 🚀 Quick Start (5 minutes)
 
+Clone the repository
+``` git clone <repository_name>```
+
+
 ### 1. Test Your Device Integration
 
 ```bash
