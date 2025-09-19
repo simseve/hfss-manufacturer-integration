@@ -186,20 +186,127 @@ docker compose exec timescaledb psql -U gps_prod_user -d gps_tracking_production
 
 ## Troubleshooting
 
-### "Not authorized" Error
-- Ensure device is registered first
-- Check MQTT username format: `device_YOUR-DEVICE-001`
-- Verify API key starts with `hfss_`
+### Common Error Messages
 
-### Points Not in Database
-- Wait 10-15 seconds for batch processing
-- Check flight_id is valid UUID
-- Verify timestamp is not in future
+#### "Invalid manufacturer secret"
+**Cause**: Manufacturer secret is incorrect or malformed
+**Solution**:
+- Verify secret is exactly 32 characters
+- Remove any spaces or newlines
+- Check you're using production secret, not test
+- Contact HFSS if secret was never provided
+
+#### "Device already exists"
+**Cause**: Device ID already registered
+**Solution**:
+- Use unique device ID for each device
+- Check if device was previously registered
+- Use `--skip-registration` with existing config file
+
+#### "MQTT connection timed out"
+**Cause**: Cannot reach MQTT broker
+**Solution**:
+```bash
+# Test connectivity
+ping dg-mqtt.hikeandfly.app
+nslookup dg-mqtt.hikeandfly.app
+telnet dg-mqtt.hikeandfly.app 8883
+
+# Check firewall allows port 8883
+# Verify CA certificate exists
+ls -la /tmp/mqtt_ca.crt
+```
+
+#### "Invalid HMAC signature"
+**Cause**: Signature calculation incorrect
+**Solution**:
+- Ensure using device_secret for HMAC (not manufacturer secret)
+- JSON must be compact: `json.dumps(data, separators=(',', ':'))`
+- Use SHA256 algorithm
+- Signature must be hexadecimal string
+
+#### "Not authorized"
+**Cause**: Invalid credentials
+**Solution**:
+- Device must be registered first
+- MQTT username format: `device_YOUR-DEVICE-001`
+- API key must start with `hfss_`
+- Password must match registration response
+
+### Data Validation Issues
+
+#### "Invalid GPS coordinates"
+**Requirements**:
+- Latitude: -90 to 90
+- Longitude: -180 to 180
+- Not (0, 0) - this is filtered as invalid
+
+#### "Invalid timestamp"
+**Requirements**:
+- ISO 8601 format with timezone
+- Must be UTC: `2025-07-11T21:30:00.000Z`
+- Cannot be in future
+- Cannot be older than 24 hours
+
+#### "Invalid flight_id"
+**Requirements**:
+- Must be valid UUID v4
+- Format: `550e8400-e29b-41d4-a716-446655440000`
+- Same for all points in a flight
+- New flight = new UUID
 
 ### Connection Issues
-- MQTT port: 8883 (TLS required)
-- HTTP port: 80/443
-- Check CA certificate is downloaded
+
+#### MQTT Specific
+```bash
+# Test MQTT broker is reachable
+mosquitto_pub -h dg-mqtt.hikeandfly.app -p 8883 \
+  --cafile ca.crt \
+  -u test -P test \
+  -t test -m "test" -d
+
+# Common issues:
+# - Port 8883 blocked by firewall
+# - CA certificate missing or invalid
+# - TLS version mismatch (use TLS 1.2+)
+```
+
+#### HTTP API Specific
+```bash
+# Test API endpoint
+curl -X GET https://dg-dev.hikeandfly.app/api/v1/health
+
+# Test with your API key
+curl -X GET https://dg-dev.hikeandfly.app/api/v1/devices \
+  -H "X-API-Key: hfss_YOUR_API_KEY"
+```
+
+### Points Not Appearing
+
+#### Check Processing Delay
+- Batch processing occurs every 10-15 seconds
+- High load may cause delays up to 1 minute
+- Check API logs for errors
+
+#### Verify Data Format
+```python
+# Correct format for single point
+{
+    "device_id": "TEST-001",
+    "flight_id": "550e8400-e29b-41d4-a716-446655440000",
+    "timestamp": "2025-07-11T21:30:00.000Z",
+    "latitude": 45.9237,
+    "longitude": 6.8694,
+    "altitude": 2400.0
+}
+```
+
+#### Debug Steps
+1. Check device registration succeeded
+2. Verify MQTT message published (check return code)
+3. Monitor MQTT broker logs
+4. Check API processing logs
+5. Query database directly
 
 ## Support
 

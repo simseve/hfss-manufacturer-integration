@@ -5,12 +5,12 @@
 The platform provides a CA certificate for MQTT TLS connections at:
 
 ```
-http://your-server/ca.crt
+https://dg-dev.hikeandfly.app/ca.crt
 ```
 
 For local testing:
 ```
-http://localhost/ca.crt
+https://localhost/ca.crt
 ```
 
 ## Automatic Download
@@ -19,7 +19,7 @@ Our test scripts automatically download this certificate:
 
 ```python
 # The script does this for you:
-response = requests.get("http://localhost/ca.crt")
+response = requests.get("https://dg-dev.hikeandfly.app/ca.crt")
 with open("/tmp/mqtt_ca.crt", "wb") as f:
     f.write(response.content)
 ```
@@ -30,10 +30,10 @@ If you need to download it manually:
 
 ```bash
 # Using curl
-curl -o ca.crt http://localhost/ca.crt
+curl -o ca.crt https://dg-dev.hikeandfly.app/ca.crt
 
 # Using wget
-wget http://localhost/ca.crt
+wget https://dg-dev.hikeandfly.app/ca.crt
 ```
 
 ## Using the Certificate
@@ -45,12 +45,12 @@ import ssl
 
 client = mqtt.Client()
 client.tls_set(ca_certs="/path/to/ca.crt")
-client.connect("localhost", 8883)
+client.connect("dg-mqtt.hikeandfly.app", 8883)
 ```
 
 ### MQTT Connection (mosquitto_pub)
 ```bash
-mosquitto_pub -h localhost -p 8883 \
+mosquitto_pub -h dg-mqtt.hikeandfly.app -p 8883 \
   --cafile ca.crt \
   -u device_YOUR-DEVICE-ID \
   -P your_mqtt_password \

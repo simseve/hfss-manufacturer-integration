@@ -27,10 +27,10 @@ python scripts/manufacturer_device_test.py --device-id MY-DEVICE-001 --num-messa
 
 ## Connection Info
 
-**MQTT**: `localhost:8883` (TLS required)  
-**HTTP**: `http://localhost/api/v1/gps/`  
-**Auth**: Device-specific credentials from registration  
-**CA Certificate**: `http://localhost/ca.crt` (auto-downloaded by scripts)
+**MQTT**: `dg-mqtt.hikeandfly.app:8883` (TLS required)
+**HTTP**: `https://dg-dev.hikeandfly.app/api/v1/gps/`
+**Auth**: Device-specific credentials from registration
+**CA Certificate**: `https://dg-dev.hikeandfly.app/ca.crt` (auto-downloaded by scripts)
 
 ## Message Flow
 

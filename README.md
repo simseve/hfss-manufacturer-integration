@@ -1,23 +1,56 @@
 # HFSS DIGI - Manufacturer Integration
 
-Welcome! This guide helps you integrate your GPS devices with the HFSS DIGI platform.
+Welcome! This guide helps you integrate your GPS tracking devices with the HFSS DIGI platform.
+
+## 🔑 Before You Start - Request Your Manufacturer Secret
+
+**IMPORTANT**: You need a manufacturer secret to integrate your devices. This secret is unique to your company and allows you to register devices on our platform.
+
+### How to Request Your Secret:
+1. **Contact HFSS Sales Team**: Email sales@hikeandfly.app with:
+   - Your company name
+   - Expected number of devices
+   - Your technical contact information
+2. **Receive Your Credentials**: You'll get:
+   - `MANUFACTURER_SECRET`: Your unique 32-character secret key
+   - `MANUFACTURER_ID`: Your company identifier (e.g., "DIGIFLY")
+   - API endpoints for production
+3. **Keep it Secure**: Store your secret safely - it's used to authenticate all your devices
 
 ## 🚀 Quick Start (5 minutes)
 
-Clone the repository
-``` git clone <repository_name>```
+### Prerequisites
+- Python 3.7 or higher
+- Your manufacturer secret (see above)
+- Network access to dg-dev.hikeandfly.app
 
+### Clone the Repository
+```bash
+git clone https://github.com/hfss/manufacturer-integration.git
+cd manufacturer-integration
+```
 
-### 1. Test Your Device Integration
+### 1. Set Your Credentials
 
 ```bash
-cd scripts
+# Option 1: Set environment variable
+export MANUFACTURER_SECRET="your_32_character_secret_here"
+
+# Option 2: Create .env file (recommended)
+cp .env.example .env
+# Edit .env and add your secret
+```
+
+### 2. Run Integration Tests
+
+```bash
+# Run all 4 tests automatically
 ./run_all_gps_tests.sh
 ```
 
-This runs all 4 tests automatically and shows you the results.
+This validates your integration by testing all GPS data endpoints.
 
-### 2. What You'll See
+### 3. What the Tests Do
 
 ✅ **Test 1**: Send 1 GPS point via MQTT  
 ✅ **Test 2**: Send 5 GPS points via MQTT (batch)  
@@ -41,42 +74,103 @@ manufacturer/
     └── archive/                       <- Detailed specs (if needed)
 ```
 
-## 🎯 Three Simple Steps
+## 🎯 Detailed Integration Steps
 
-### Step 1: Get Your Credentials
+### Step 1: Configure Your Environment
 ```bash
-# Your manufacturer secret is provided by HFSS
-export MANUFACTURER_SECRET=your_secret_here
+# Set your manufacturer secret (provided by HFSS)
+export MANUFACTURER_SECRET="GziZ46Tr4ANkhKh75lFnPtOrTkLgfHWe"  # Example - use your actual secret
+
+# Set the API endpoint (production)
+export API_URL="https://dg-dev.hikeandfly.app/api/v1"
+export MQTT_HOST="dg-mqtt.hikeandfly.app"
 ```
 
 ### Step 2: Register a Test Device
 ```bash
-python scripts/manufacturer_device_test.py \
+# Register a new device (happens once at factory)
+python3 scripts/manufacturer_device_test.py \
+  --api-url "$API_URL" \
+  --mqtt-host "$MQTT_HOST" \
   --device-id TEST-001 \
-  --manufacturer-secret $MANUFACTURER_SECRET \
+  --manufacturer-secret "$MANUFACTURER_SECRET" \
   --num-messages 0
+
+# This simulates:
+# 1. Factory provisioning (generating device credentials)
+# 2. First boot registration (device self-registers with cloud)
+# 3. Saves credentials to /tmp/device_TEST-001_complete.json
 ```
 
 ### Step 3: Send GPS Data
 ```bash
-# Send via MQTT
-python scripts/manufacturer_device_test.py \
+# Send via MQTT (recommended for real-time tracking)
+python3 scripts/manufacturer_device_test.py \
   --config-file /tmp/device_TEST-001_complete.json \
   --skip-registration \
   --num-messages 5
 
-# Or send via HTTP
-python scripts/test_http_api.py
+# Send batch via MQTT (power-efficient)
+python3 scripts/manufacturer_device_test.py \
+  --config-file /tmp/device_TEST-001_complete.json \
+  --skip-registration \
+  --batch-mode \
+  --batch-size 10 \
+  --num-batches 3
+
+# Send via HTTP API (for periodic updates)
+python3 scripts/manufacturer_device_test.py \
+  --config-file /tmp/device_TEST-001_complete.json \
+  --skip-registration \
+  --test-http-batch
 ```
 
-## 📊 Verify Your Data
+## 📊 Understanding the Scripts
 
-Check if your GPS points reached our servers:
+### manufacturer_device_test.py
+The main integration testing tool that simulates a complete device lifecycle:
 
 ```bash
-docker compose exec timescaledb psql -U gps_prod_user -d gps_tracking_production -c \
-  "SELECT COUNT(*) FROM gps_data WHERE device_id = 'TEST-001'"
+python3 scripts/manufacturer_device_test.py --help
 ```
+
+**Key Parameters:**
+- `--device-id`: Unique device identifier (e.g., "GPS-TRACKER-001")
+- `--manufacturer-secret`: Your company's secret key
+- `--api-url`: API endpoint (default: https://dg-dev.hikeandfly.app/api/v1)
+- `--mqtt-host`: MQTT broker (default: dg-mqtt.hikeandfly.app)
+- `--skip-registration`: Use existing device credentials
+- `--config-file`: Path to saved device configuration
+- `--batch-mode`: Send multiple GPS points in one message
+- `--num-messages`: Number of GPS points to send
+
+### run_all_gps_tests.sh
+Automated test suite that validates all integration endpoints:
+
+```bash
+./run_all_gps_tests.sh
+```
+
+**What it tests:**
+1. MQTT single message
+2. MQTT batch messages
+3. HTTP single POST
+4. HTTP batch POST
+
+### paraglider_emulator.py
+Advanced traffic simulator for load testing:
+
+```bash
+python3 scripts/paraglider_emulator.py \
+  --domain dg-dev.hikeandfly.app \
+  --devices 10 \
+  --duration 30
+```
+
+**Features:**
+- Simulates multiple devices simultaneously
+- Realistic flight patterns (takeoff, thermal, landing)
+- Configurable device count and duration
 
 ## 🔧 Integration Options
 
