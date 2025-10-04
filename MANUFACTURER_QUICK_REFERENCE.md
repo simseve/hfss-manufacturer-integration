@@ -63,7 +63,7 @@ TOPIC: gps/{device_id}/data
 }
 ```
 
-**Note**: `flight_id` is a UUID v4 that identifies a flight session. Generate a new flight_id when takeoff is detected and keep it constant during the entire flight. Set to null when on ground.
+**Note**: `flight_id` is a UUID v4 that identifies a flight session. Generate a new flight_id when takeoff is detected and keep it constant during the entire flight. Close the flight when landing.
 
 ## 🔐 Security Checklist
 
@@ -100,6 +100,30 @@ TOPIC: gps/{device_id}/data
 - Check timestamp is UTC and recent (±5 min)
 - Ensure all required fields present
 
+### 5️⃣ Close Flight (Landing)
+```json
+TOPIC: flight/{device_id}/close
+
+{
+  "flight_id": "550e8400-e29b-41d4-a716-446655440000",
+  "api_key": "{from registration}"
+}
+
+Response (on topic flight/{device_id}/closed):
+{
+  "flight_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "closed",
+  "distance": 45.8,
+  "duration": "01:23:45"
+}
+```
+
+**HTTP Alternative:**
+```bash
+POST /api/v1/flights/{flight_id}/close
+X-API-Key: {your_api_key}
+```
+
 ## 📡 Test Commands
 
 ```bash
@@ -112,6 +136,13 @@ curl -X POST https://dg-dev.hikeandfly.app/api/v1/devices/register \
 mosquitto_pub -h dg-mqtt.hikeandfly.app -p 8883 \
   --cafile ca.crt -t test -m test \
   -u device_TEST -P test
+
+# Test flight close (MQTT)
+mosquitto_pub -h dg-mqtt.hikeandfly.app -p 8883 \
+  --cafile ca.crt \
+  -u device_YOUR-DEVICE -P your_password \
+  -t "flight/YOUR-DEVICE/close" \
+  -m '{"flight_id":"uuid","api_key":"key"}'
 ```
 
 ## 📞 Support

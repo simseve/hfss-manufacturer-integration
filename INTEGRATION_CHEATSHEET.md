@@ -32,12 +32,19 @@ python scripts/manufacturer_device_test.py --device-id MY-DEVICE-001 --num-messa
 **Auth**: Device-specific credentials from registration
 **CA Certificate**: `https://dg-dev.hikeandfly.app/ca.crt` (auto-downloaded by scripts)
 
+## Flight Close
+
+**MQTT Topic**: `flight/{device_id}/close`
+**MQTT Payload**: `{"flight_id": "uuid", "api_key": "key"}`
+**HTTP**: `POST /api/v1/flights/{flight_id}/close` with `X-API-Key` header
+
 ## Message Flow
 
 1. **Register** → Get credentials
 2. **Connect** → MQTT or HTTP
 3. **Send GPS** → With HMAC signature
-4. **Verify** → Check database
+4. **Close Flight** → Finalize session (optional)
+5. **Verify** → Check database
 
 ## Quick Debug
 

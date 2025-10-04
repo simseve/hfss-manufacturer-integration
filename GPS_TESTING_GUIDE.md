@@ -61,7 +61,7 @@ python test_http_api.py
 python manufacturer_device_test.py --config-file /tmp/device_config.json --skip-registration --num-messages 1
 ```
 
-### 📦 Test 2: Batch GPS Points via MQTT  
+### 📦 Test 2: Batch GPS Points via MQTT
 - **Purpose**: Test power-efficient batch transmission
 - **Protocol**: MQTT over TLS (port 8883)
 - **Benefits**: 90% reduction in network overhead
@@ -81,6 +81,27 @@ python manufacturer_device_test.py --config-file /tmp/device_config.json --skip-
 - **Purpose**: Test batch REST API endpoint
 - **Processing**: Asynchronous via Redis Streams
 - **Response**: Returns immediately with "accepted" status
+
+### ✈️ Test 5: Close Flight Session
+- **Purpose**: Finalize flight and calculate statistics
+- **Protocol**: MQTT or HTTP
+- **Action**: Marks flight as closed, calculates distance/duration
+
+**Via MQTT:**
+```bash
+mosquitto_pub -h dg-mqtt.hikeandfly.app -p 8883 \
+  --cafile ca.crt \
+  -u "device_YOUR-DEVICE" \
+  -P "your_mqtt_password" \
+  -t "flight/YOUR-DEVICE/close" \
+  -m '{"flight_id": "your-flight-uuid", "api_key": "your_api_key"}'
+```
+
+**Via HTTP:**
+```bash
+curl -X POST "https://dg-dev.hikeandfly.app/api/v1/flights/{flight_id}/close" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
 
 ## Verify Data Reception
 
@@ -170,6 +191,7 @@ docker compose exec timescaledb psql -U gps_prod_user -d gps_tracking_production
 2. **Flight Sessions**: Generate new flight_id for each flight
    - Use UUID v4 format
    - Keep same flight_id for all points in a flight
+   - **Close flight when landing** to finalize statistics
 
 3. **Timestamps**: Always use UTC with timezone
    - ISO 8601 format: `2025-07-11T21:30:00.000Z`
@@ -179,7 +201,13 @@ docker compose exec timescaledb psql -U gps_prod_user -d gps_tracking_production
    - MQTT: Maintain persistent connection during flight
    - HTTP: Use connection pooling for multiple requests
 
-5. **Error Handling**:
+5. **Flight Lifecycle**:
+   - **Takeoff**: Generate new flight_id (UUID v4)
+   - **In-flight**: Send GPS points with same flight_id
+   - **Landing**: Close flight via MQTT or HTTP
+   - Listen for confirmation on `flight/{device_id}/closed` topic
+
+6. **Error Handling**:
    - Implement retry logic with exponential backoff
    - Store failed transmissions for later retry
    - Monitor battery level before transmission

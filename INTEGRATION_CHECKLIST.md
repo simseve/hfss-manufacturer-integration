@@ -50,6 +50,8 @@ Use this checklist to ensure your GPS device integration is complete and product
   - [ ] Test 2: MQTT Batch ✅
   - [ ] Test 3: HTTP Single Point ✅
   - [ ] Test 4: HTTP Batch ✅
+  - [ ] Test 5: Flight Close (MQTT) ✅
+  - [ ] Test 6: Flight Close (HTTP) ✅
 
 - [ ] **Device Registration**
   ```bash
@@ -93,6 +95,12 @@ Use this checklist to ensure your GPS device integration is complete and product
     - [ ] altitude
     - [ ] speed
     - [ ] battery_level
+
+- [ ] **Flight Lifecycle Management**
+  - [ ] New flight_id generated on takeoff
+  - [ ] Same flight_id used for all points in flight
+  - [ ] Flight closed on landing (MQTT or HTTP)
+  - [ ] Listen for close confirmation on `flight/{device_id}/closed`
 
 - [ ] **Connection Management**
   - [ ] Automatic reconnection on disconnect

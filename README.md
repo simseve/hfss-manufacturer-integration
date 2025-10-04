@@ -125,6 +125,21 @@ python3 scripts/manufacturer_device_test.py \
   --test-http-batch
 ```
 
+### Step 4: Close Flight Session
+When a flight ends, close it to finalize statistics:
+
+**Via MQTT:**
+```bash
+# Publish to: flight/{device_id}/close
+# Payload: {"flight_id": "your-flight-uuid", "api_key": "your_api_key"}
+```
+
+**Via HTTP:**
+```bash
+curl -X POST "https://dg-dev.hikeandfly.app/api/v1/flights/{flight_id}/close" \
+  -H "X-API-Key: YOUR_API_KEY"
+```
+
 ## 📊 Understanding the Scripts
 
 ### manufacturer_device_test.py
@@ -178,11 +193,13 @@ python3 scripts/paraglider_emulator.py \
 - **Protocol**: MQTT over TLS (port 8883)
 - **Best for**: Continuous GPS tracking
 - **Power efficient**: Batch up to 30 points
+- **Flight control**: Close flights via MQTT topic
 
 ### Option B: HTTP API
 - **Protocol**: HTTPS REST API
 - **Best for**: Periodic updates
 - **Simple**: Standard HTTP POST requests
+- **Flight control**: Close flights via REST endpoint
 
 ## 📚 Need More Details?
 

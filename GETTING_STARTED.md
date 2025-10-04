@@ -178,7 +178,38 @@ client.publish(
 )
 ```
 
-## Step 5: Production Deployment
+## Step 5: Understanding Flight Lifecycle
+
+### Complete Flight Flow
+
+1. **Takeoff Detection:**
+   - Device detects flight start (altitude/speed threshold)
+   - Generate new `flight_id = str(uuid.uuid4())`
+   - Start sending GPS points with this flight_id
+
+2. **In-Flight Tracking:**
+   - Send GPS points every 10 seconds (or batch every 30 seconds)
+   - All points use same flight_id
+   - Include altitude, speed, battery level
+
+3. **Landing Detection:**
+   - Device detects landing (low speed/stable altitude)
+   - Send final GPS points
+   - **Close flight session** via MQTT or HTTP
+
+4. **Flight Finalization:**
+   - Platform calculates total distance
+   - Marks flight as inactive
+   - Returns statistics (distance, duration, max altitude)
+
+### MQTT Topics Summary
+
+- **GPS Data**: `gps/{device_id}/data`
+- **Close Flight**: `flight/{device_id}/close`
+- **Close Confirmation**: `flight/{device_id}/closed` (listen)
+- **Errors**: `flight/{device_id}/error` (listen)
+
+## Step 6: Production Deployment
 
 ### Device Manufacturing Process
 
@@ -221,6 +252,28 @@ store_mqtt_credentials(mqtt_creds)
 - Send GPS updates every 10 seconds
 - Batch points if offline
 - Reconnect automatically
+
+4. **Flight Close - Finalize Session:**
+```python
+# When flight ends, close the session
+close_payload = {
+    "flight_id": current_flight_id,
+    "api_key": credentials["api_key"]
+}
+
+# Via MQTT (recommended)
+client.publish(
+    f"flight/{device_id}/close",
+    json.dumps(close_payload),
+    qos=1
+)
+
+# Listen for confirmation
+def on_message(client, userdata, msg):
+    if msg.topic == f"flight/{device_id}/closed":
+        result = json.loads(msg.payload)
+        print(f"Flight closed: {result['distance']}km, {result['duration']} duration")
+```
 
 ## Troubleshooting
 
